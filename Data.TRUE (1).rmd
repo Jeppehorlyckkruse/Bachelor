@@ -1,0 +1,1601 @@
+---
+title: "Data.TRUE"
+author: "Rikke Blomgreen"
+date: "2023-02-17"
+output: pdf_document
+---
+
+# Loading packages
+```{r}
+library(car)
+library(dplyr)
+library(expss)
+library(forecast)
+library(ggbreak)
+library(ggplot2)
+library(haven)
+library(httr)
+library(jsonlite)
+library(kableExtra)
+library(lmtest)
+library(lubridate)
+library(readr)
+library(readxl)
+library(rdbnomics)
+library(stargazer)
+library(stats)
+library(tidyverse)
+library(tidyr)
+library(tsDyn)
+library(tseries)
+library(urca)
+library(vars)
+library(zoo)
+```
+
+# Original OECD data
+```{r}
+#Loading the data
+OECD <- read_csv("OECD_Data.csv")
+```
+
+```{r}
+#Correcting time-horizon 
+OECD <- subset(OECD, TIME>"1969-Q4")
+OECD <- subset(OECD, TIME<"2020-Q1")
+```
+
+```{r}
+#Creating 3 variables to determine specific time of observation 
+OECD$Quarterly <- substring(OECD$Period, 2, 2)
+OECD$Year <- substring(OECD$TIME, 1, 4)
+OECD$Q <- ifelse(OECD$Quarterly==1,0,
+                 ifelse(OECD$Quarterly==2,0.25,
+                        ifelse(OECD$Quarterly==3,0.5,
+                               ifelse(OECD$Quarterly==4,0.75,NA))))
+
+## (Time is used for visualization)
+OECD$Time <- as.numeric(OECD$Year) + as.numeric(OECD$Q)
+
+#Removing the old variables
+OECD$Period <- NULL
+OECD$TIME <- NULL
+OECD$Q <- NULL
+```
+
+```{r}
+#Removing other variables, that do not matter 
+OECD$LOCATION <- NULL
+OECD$SUBJECT <- NULL
+OECD$Measure <- NULL
+OECD$Frequency <- NULL
+OECD$FREQUENCY <- NULL
+OECD$Unit <- NULL
+OECD$`Unit Code` <- NULL
+OECD$`PowerCode Code` <- NULL
+OECD$PowerCode <- NULL
+OECD$`Reference Period Code` <- NULL
+OECD$`Reference Period` <- NULL
+OECD$`Flag Codes` <- NULL
+OECD$Flags <- NULL
+```
+
+# Subset OECD correctly and add lagged variable
+```{r}
+#Subset the five relevant variables 
+IShare <- subset(OECD, Subject == "Gross fixed capital formation")
+IShare <- subset(IShare, MEASURE == "VPVOBARSA")
+
+GShare <- subset(OECD, Subject == "General government final consumption expenditure")
+GShare <- subset(GShare, MEASURE == "VPVOBARSA")
+
+CShare <- subset(OECD, Subject == "Private final consumption expenditure")
+CShare <- subset(CShare, MEASURE == "VPVOBARSA")
+
+GDP <- subset(OECD, Subject == "Gross domestic product - expenditure approach")
+GDPGrowth <- subset(GDP, MEASURE == "GPSA")
+
+GDP <- subset(GDP, MEASURE == "VPVOBARSA")
+```
+
+```{r}
+#Create variables "as a share of GDP" 
+IShare$Value <- IShare$Value/GDP$Value
+GShare$Value <- GShare$Value/GDP$Value
+CShare$Value <- CShare$Value/GDP$Value
+```
+
+```{r}
+#Create log(lagged y) variable
+GDP$loglag <- GDP$Value
+LoglagY <- subset(GDP, select = c("Country", "Year", "Quarterly", "loglag"))
+
+#Subset into country
+LoglagY_de <- subset(LoglagY, Country == "Germany") 
+LoglagY_fr <- subset(LoglagY, Country == "France")
+LoglagY_uk <- subset(LoglagY, Country == "United Kingdom") 
+
+#Make lagged GDP
+LoglagY_fr$loglag <- sapply(1:nrow(LoglagY_fr), function(x) LoglagY_fr$loglag[x-1])
+LoglagY_de$loglag <- sapply(1:nrow(LoglagY_de), function(x) LoglagY_de$loglag[x-1])
+LoglagY_uk$loglag <- sapply(1:nrow(LoglagY_uk), function(x) LoglagY_uk$loglag[x-1])
+
+#Make the variable numeric
+LoglagY_fr$loglag <- as.numeric(LoglagY_fr$loglag)
+LoglagY_de$loglag <- as.numeric(LoglagY_de$loglag)
+LoglagY_uk$loglag <- as.numeric(LoglagY_uk$loglag)
+
+#Taking the logarithm of the lagged variable
+LoglagY_fr$loglag <- log(LoglagY_fr$loglag)
+LoglagY_de$loglag <- log(LoglagY_de$loglag)
+LoglagY_uk$loglag <- log(LoglagY_uk$loglag)
+
+#Remove first value in each data-set
+LoglagY_fr$loglag[1] <- 0
+LoglagY_de$loglag[1] <- 0
+LoglagY_uk$loglag[1] <- 0
+
+#Collecting
+LoglagY <- rbind(LoglagY_fr,LoglagY_de,LoglagY_uk)
+
+#Remove unneccesary dataset from environment
+rm(LoglagY_de, LoglagY_fr, LoglagY_uk, GDP)
+```
+
+```{r}
+#Insert variable in data-sets
+GDPGrowth <- GDPGrowth |>
+ left_join(LoglagY, by = c("Year", "Quarterly","Country"))
+
+IShare <- IShare |>
+ left_join(LoglagY, by = c("Year", "Quarterly","Country"))
+
+GShare <- GShare |>
+ left_join(LoglagY, by = c("Year", "Quarterly","Country"))
+
+CShare <- CShare |>
+ left_join(LoglagY, by = c("Year", "Quarterly","Country"))
+
+#Remove unneccesary dataset from environment
+rm(LoglagY)
+```
+
+```{r}
+#Name the specific variables
+GDPGrowth$Variable <- "Growth of Gross Domestic Product"
+IShare$Variable <- "Gross fixed capital formation as a share of GDP"
+GShare$Variable <- "Government final consumption expenditure as a share of GDP"
+CShare$Variable <- "Privat final consumption expenditure as a share of GDP"
+```
+
+```{r}
+#Connect it all into one data-set again 
+OECD <- rbind(GDPGrowth, IShare, GShare, CShare)
+
+#Remove variables MEASURE and Subject
+OECD$MEASURE <- NULL
+OECD$Subject <- NULL
+```
+
+# Original GTD data
+```{r}
+#Load dataset
+GTD <- read_excel("GTD_Data.xlsx")
+```
+
+```{r}
+#Subset to specific countries
+GTD_fr <- subset(GTD,country_txt == "France")
+GTD_de <- subset(GTD,country_txt == "Germany")
+GTD_wde <- subset(GTD,country_txt == "West Germany (FRG)")
+GTD_ede <- subset(GTD,country_txt == "East Germany (GDR)")
+GTD_uk <- subset(GTD, country_txt == "United Kingdom")
+
+GTD <- rbind(GTD_fr, GTD_de, GTD_wde, GTD_ede, GTD_uk)
+
+#Remove unneccessary datasets from environment
+rm(GTD_fr, GTD_de, GTD_ede, GTD_wde, GTD_uk)
+```
+
+```{r}
+#Select variables of interest
+GTD <- subset(GTD, select = c('iyear',
+'imonth',
+'country_txt',
+'nkill',
+'nwound',
+'property', 
+'INT_ANY'
+))
+```
+
+```{r}
+#Rename to variables to match OECD data
+GTD$Year = GTD$iyear
+GTD$iyear <- NULL
+
+GTD$Country = GTD$country_txt
+GTD$country_txt <- NULL
+```
+
+```{r}
+#Adding dummy variable of incident and change property to dummy
+GTD$incident <- 1 
+
+GTD$property = ifelse(GTD$property == 0, 0,
+                             ifelse(GTD$property > 0, 1, NA))
+```
+
+```{r}
+#Creating "type of attack"-variable
+GTD$domestic = ifelse(GTD$INT_ANY == 0, 1, 0)
+GTD$transnational = ifelse(GTD$INT_ANY == 1, 1, 0)
+GTD$INT_ANY <- NULL
+
+GTD$domestic <- replace_na(GTD$domestic,0)
+GTD$transnational <- replace_na(GTD$transnational,0)
+
+```
+
+```{r}
+#Making quarterly-variable
+GTD$Quarterly <- ifelse(GTD$imonth<4,1,ifelse(GTD$imonth<7,2,ifelse(GTD$imonth<10,3,ifelse(GTD$imonth<13,4,NA))))
+GTD$imonth <- NULL
+```
+
+```{r}
+#Remove NA of important values
+GTD <- subset(GTD, !is.na(nkill))
+GTD <- subset(GTD, !is.na(nwound))
+GTD <- subset(GTD, !is.na(property))
+
+#We work with 7480 incidents in total
+```
+
+```{r}
+#Summing up to quarterly data-points
+GTD <- GTD |>
+  group_by(Quarterly, Year, Country) |>
+  summarize(nkill = sum(nkill),
+            nwound = sum(nwound),
+            property = sum(property),
+            incident = sum(incident),
+            domestic = sum(domestic),
+            transnational = sum(transnational)) |>
+  as.data.frame()
+```
+
+```{r}
+#Connect observations from Germany in period 1970-2020
+GTD_wde <- subset(GTD,Country == "West Germany (FRG)")
+GTD_ede <- subset(GTD,Country == "East Germany (GDR)")
+GTD_de <- subset(GTD,Country == "Germany")
+GTD_uk <- subset(GTD,Country == "United Kingdom")
+GTD_fr <- subset(GTD,Country == "France")
+
+GTD_de <- rbind(GTD_wde, GTD_ede, GTD_de)
+
+GTD_de <- GTD_de |>
+  group_by(Quarterly, Year) |>
+  summarize(nkill = sum(nkill),
+            nwound = sum(nwound),
+            property = sum(property),
+            incident = sum(incident),
+            domestic = sum(domestic),
+            transnational = sum(transnational)) |>
+  as.data.frame()
+
+GTD_de$Country <- "Germany"
+GTD <- rbind(GTD_de,GTD_uk,GTD_fr)
+
+#Remove unneccessary datasets from environment
+rm(GTD_de, GTD_fr, GTD_uk, GTD_ede, GTD_wde)
+```
+
+# Join data-sets together
+```{r}
+#Make variables as integers
+OECD$Year <- as.integer(OECD$Year)
+GTD$Year <- as.integer(GTD$Year)
+
+OECD$Quarterly <- as.integer(OECD$Quarterly)
+GTD$Quarterly <- as.integer(GTD$Quarterly)
+```
+
+```{r}
+#Join the two data-sets
+DATA <- OECD |>
+  left_join(GTD, by = c("Year", "Quarterly","Country"))
+
+#Remove unneccessary datasets from environment
+rm(CShare, GShare, IShare, GDPGrowth)
+```
+
+```{r}
+#Subset data-sets into response-variables
+GDPGrowth <- subset(DATA, grepl("Growth of Gross Domestic Product", Variable))
+IShare <- subset(DATA, grepl("Gross fixed capital formation as a share of GDP", Variable))
+GShare <- subset(DATA, grepl("Government final consumption expenditure as a share of GDP", Variable))
+CShare <- subset(DATA, grepl("Privat final consumption expenditure as a share of GDP", Variable))
+```
+
+# OLS Regression
+```{r}
+#Gross Domestic Product
+Y_OLS1 <- lm(Value ~ loglag + incident, data = GDPGrowth)
+Y_OLS2 <- lm(Value ~ loglag + domestic, data = GDPGrowth)
+Y_OLS3 <- lm(Value ~ loglag + transnational , data = GDPGrowth)
+Y_OLS4 <- lm(Value ~ loglag + nkill, data = GDPGrowth)
+Y_OLS5 <- lm(Value ~ loglag + nwound, data = GDPGrowth)
+Y_OLS6 <- lm(Value ~ loglag + property, data = GDPGrowth)
+Y_OLS7 <- lm(Value ~ loglag + domestic + transnational + nkill + nwound + property, data = GDPGrowth)
+
+stargazer(Y_OLS1, Y_OLS2, Y_OLS3, Y_OLS4, Y_OLS5, Y_OLS6, Y_OLS7, dep.var.labels = "Growth of gross domestic product", type="text")
+```
+
+```{r}
+#Government spending
+G_OLS1 <- lm(Value ~ loglag + incident, data = GShare)
+G_OLS2 <- lm(Value ~ loglag + domestic, data = GShare)
+G_OLS3 <- lm(Value ~ loglag + transnational , data = GShare)
+G_OLS4 <- lm(Value ~ loglag + nkill, data = GShare)
+G_OLS5 <- lm(Value ~ loglag + nwound, data = GShare)
+G_OLS6 <- lm(Value ~ loglag + property, data = GShare)
+G_OLS7 <- lm(Value ~ loglag + domestic + transnational + nkill + nwound + property, data = GShare)
+
+stargazer(G_OLS1, G_OLS2, G_OLS3, G_OLS4, G_OLS5, G_OLS6, G_OLS7, dep.var.labels = "Government final consumption expenditure as a share of GDP",  type="text")
+```
+
+```{r}
+#Investment
+I_OLS1 <- lm(Value ~ loglag + incident, data = IShare)
+I_OLS2 <- lm(Value ~ loglag + domestic, data = IShare)
+I_OLS3 <- lm(Value ~ loglag + transnational , data = IShare)
+I_OLS4 <- lm(Value ~ loglag + nkill, data = IShare)
+I_OLS5 <- lm(Value ~ loglag + nwound, data = IShare)
+I_OLS6 <- lm(Value ~ loglag + property, data = IShare)
+I_OLS7 <- lm(Value ~ loglag + domestic + transnational + nkill + nwound + property, data = IShare)
+
+stargazer(I_OLS1, I_OLS2, I_OLS3, I_OLS4, I_OLS5, I_OLS6, I_OLS7, dep.var.labels = "Gross fixed capital formation as a share of GDP", type="text")
+```
+
+```{r}
+#Consumption 
+C_OLS1 <- lm(Value ~ loglag + incident, data = CShare)
+C_OLS2 <- lm(Value ~ loglag + domestic, data = CShare)
+C_OLS3 <- lm(Value ~ loglag + transnational , data = CShare)
+C_OLS4 <- lm(Value ~ loglag + nkill, data = CShare)
+C_OLS5 <- lm(Value ~ loglag + nwound, data = CShare)
+C_OLS6 <- lm(Value ~ loglag + property, data = CShare)
+C_OLS7 <- lm(Value ~ loglag + domestic + transnational + nkill + nwound + property, data = CShare)
+
+
+stargazer(C_OLS1, C_OLS2, C_OLS3, C_OLS4, C_OLS5, C_OLS6, C_OLS7, dep.var.labels = "Private final consumption expenditure as a share of GDP", type="text")
+
+```
+
+```{r}
+stargazer(C_OLS7, I_OLS7, G_OLS7, column.labels = c("C/GDP", "I/GDP","G/GDP"), type="text")
+```
+
+## Checking for assumptions in the LDV regression C/GDP
+```{r}
+
+#1. Linearity 
+vif(C_OLS7)
+# = no multicollinearity as all variables are below 5. 
+
+#2. Independence (Durbin-Watson)
+durbinWatsonTest(C_OLS7)
+# = p-value on 0. H_A: autocorrelation present
+
+#3. Homoskedasticity (Breusch-Pagan)
+bptest(C_OLS7)
+# = We reject the null hypothesis of homoskedaticity. 
+
+#4. Normality
+# = Automatically rejected
+
+#5. Stationarity
+CShare <- remove_missing(CShare)
+adf.test(c(CShare$Value,CShare$loglag)) 
+# = Not stationary
+
+#6. No perfect multicollinearity
+# = no multicollinearity 
+
+#7. Exogeneity
+# = endogeneity present
+
+Assumptions <- c( "Linearity", "Independence", "Homoskedasticity", "Normality", "Stationarity", "No perfect multicollinearity", "Exogeneity")
+
+Testing_Methods <- c("Variance Inflation Factor", "Durbin Watson test","Breusch-Pagan test", "Breusch-Pagan test" , "Augmented Dicky-Fuller test" , "Variance Inflation Factor", "Breusch-Pagan test")
+
+Conclusion <- c( "No multicollinearity as VIF<5 for X", "Autocorrelation is present as p-value < 5% ", "Heteroskedasticity present because p-value < 5%", "Normality rejected, as homoeskedasticity not present", "Not stationary", "No multicollinearity", "Endogeneity present")
+
+df<- cbind(Assumptions,Testing_Methods,Conclusion)
+```
+
+## Checking for assumptions in the LDV regression I/GDP
+```{r}
+
+#1. Linearity 
+vif(I_OLS7)
+# = no multicollinearity as all variables are below 5. 
+
+#2. Independence (Durbin-Watson)
+durbinWatsonTest(I_OLS7)
+# = p-value on 0. H_A: autocorrelation present
+
+#3. Homoskedasticity (Breusch-Pagan)
+bptest(I_OLS7)
+# = We reject the null hypothesis of homoskedaticity. 
+
+#4. Normality
+# = Automatically rejected
+
+#5. Stationarity
+IShare <- remove_missing(IShare)
+adf.test(c(IShare$Value,IShare$loglag)) 
+adf.test(c(IShare$Value,IShare$incident))
+adf.test(c(GDPGrowth$Value,GDPGrowth$loglag))
+# = Not stationary
+
+#6. No perfect multicollinearity
+# = no multicollinearity 
+
+#7. Exogeneity
+# = endogeneity present
+
+Assumptions <- c( "Linearity", "Independence", "Homoskedasticity", "Normality", "Stationarity", "No perfect multicollinearity", "Exogeneity")
+
+Testing_Methods <- c("Variance Inflation Factor", "Durbin Watson test","Breusch-Pagan test", "Breusch-Pagan test" , "Augmented Dicky-Fuller test" , "Variance Inflation Factor", "Breusch-Pagan test")
+
+Conclusion <- c( "No multicollinearity as VIF<5 for X", "Autocorrelation is present as p-value < 5% ", "Heteroskedasticity present because p-value < 5%", "Normality rejected, as homoeskedasticity not present", "Not stationary", "No multicollinearity", "Endogeneity present")
+
+df<- cbind(Assumptions,Testing_Methods,Conclusion)
+```
+
+## Checking for assumptions in the LDV regression G/GDP
+```{r}
+
+#1. Linearity 
+vif(G_OLS7)
+# = no multicollinearity as all variables are below 5. 
+
+#2. Independence (Durbin-Watson)
+durbinWatsonTest(G_OLS7)
+# = p-value on 0. H_A: autocorrelation present
+
+#3. Homoskedasticity (Breusch-Pagan)
+bptest(I_OLS7)
+# = We reject the null hypothesis of homoskedaticity. 
+
+#4. Normality
+# = Automatically rejected
+
+#5. Stationarity
+GShare <- remove_missing(GShare)
+adf.test(c(GShare$Value,GShare$loglag)) 
+adf.test(c(CShare$Value,CShare$incident))
+adf.test(c(GDPGrowth$Value,GDPGrowth$loglag))
+# = Not stationary
+
+#6. No perfect multicollinearity
+# = no multicollinearity 
+
+#7. Exogeneity
+# = endogeneity present
+
+Assumptions <- c( "Linearity", "Independence", "Homoskedasticity", "Normality", "Stationarity", "No perfect multicollinearity", "Exogeneity")
+
+Testing_Methods <- c("Variance Inflation Factor", "Durbin Watson test","Breusch-Pagan test", "Breusch-Pagan test" , "Augmented Dicky-Fuller test" , "Variance Inflation Factor", "Breusch-Pagan test")
+
+Conclusion <- c( "No multicollinearity as VIF<5 for X", "Autocorrelation is present as p-value < 5% ", "Heteroskedasticity present because p-value < 5%", "Normality rejected, as homoeskedasticity not present", "Not stationary", "No multicollinearity", "Endogeneity present")
+
+df<- cbind(Assumptions,Testing_Methods,Conclusion)
+```
+
+# Graphing of terrorism
+````{r}
+#Create yearly data
+GTD_graph <- GTD |>
+  group_by(Year, Country) |>
+  summarize(nkill = sum(nkill),
+            nwound = sum(nwound),
+            property = sum(property),
+            Incident = sum(Incident),
+            Domestic = sum(Domestic),
+            Transnational = sum(Transnational)) |>
+  as.data.frame()
+```
+
+```{r}
+#Load national OECD Data
+OECD_graph <- read_csv("OECD_Data_National.csv")
+OECD_graph <- subset(OECD_graph, Time<"2020")
+
+GDP_graph <- subset(OECD_graph, INDICATOR == "GDPCPC")
+GDPGrowth_graph <- subset(OECD_graph, INDICATOR == "GDPG")
+
+OECD_graph <- GDP_graph |>
+  left_join(GDPGrowth_graph, by = c("Time","Country"))
+
+OECD_graph$GDP <- OECD_graph$Value.x
+OECD_graph$GDPGrowth <- OECD_graph$Value.y
+```
+
+```{r}
+#Figure 1 -> Economic Growth 
+ggplot(OECD_graph,aes(x=Time, y=GDPGrowth, group=Country, color=Country)) +
+  geom_line() + 
+  labs(title="Economic growth from 1970 to 2020", 
+       caption = "Source: OECD, Annual National Accounts",
+       tag = "Fig. 1") + theme_bw() + 
+  scale_y_continuous(name="Growth in (%) of GDP") +
+  scale_x_continuous(name="Year") + 
+  scale_color_manual(values = c("red","green","blue"))
+```
+
+```{r}
+#Figure 2 -> Gross Domestic Products
+OECD_graph %>% 
+  filter(Country=="France") %>% 
+  ggplot(aes(x=Time)) + 
+  geom_line(aes(y=GDP), color="black", size=2, alpha=0.8) + 
+  geom_col(aes(y=GDPGrowth*1000), color="red", fill="red", alpha=0.5) + 
+  scale_y_continuous(name="Gross Domestic Product (in billions)", breaks=c(0,2500,5000),
+                     sec.axis = sec_axis(~./1000, name = "Growth in (%)")) + theme_bw()  + 
+  scale_x_continuous(name = "Year") + 
+  labs(title = "GDP in France (current PPP, US dollar)", 
+       subtitle = "Level (line, left axis), growth (bars, right axis)", 
+       caption = "Source: OECD, Annual National Accounts", 
+       tag = "Fig. 2a")
+
+OECD_graph %>% 
+  filter(Country=="Germany") %>% 
+  ggplot(aes(x=Time)) + 
+  geom_line(aes(y=GDP), color="black", size=2, alpha=0.8) + 
+  geom_col(aes(y=GDPGrowth*1000), color="green", fill="green", alpha=0.5) + 
+  scale_y_continuous(name="Gross Domestic Product (in billions)", breaks=c(0,2500,5000),
+                     sec.axis = sec_axis(~./1000, name = "Growth in (%)")) + theme_bw() + 
+  scale_x_continuous(name = "Year") + 
+  labs( title = "GDP in Germany (current PPP, US dollar)", 
+        subtitle = "Level (line, left axis), growth (bars, right axis)", 
+        caption = "Source: OECD, Annual National Accounts", 
+        tag = "Fig. 2b")
+
+OECD_graph %>% 
+  filter(Country=="United Kingdom") %>% 
+  ggplot(aes(x=Time)) + 
+  geom_line(aes(y=GDP), color="black", size=2, alpha=0.8) + 
+  geom_col(aes(y=GDPGrowth*1000), color="blue", fill="blue", alpha=0.5) + 
+  scale_y_continuous(name="Gross Domestic Product (in billions)", breaks=c(0,2500,5000),
+                     sec.axis = sec_axis(~./1000, name = "Growth in (%)")) + theme_bw() +
+  scale_x_continuous(name = "Year") + 
+  labs( title = "GDP in United Kingdom (current PPP, US dollar)", 
+        subtitle = "Level (line, left axis), growth (bars, right axis)", 
+        caption = "Source: OECD, Annual National Accounts", 
+        tag = "Fig. 2c")
+
+```
+
+```{r}
+#Figure 3 <- Incidents
+ggplot(GTD_graph,aes(x=Year,y=Incident, group=Country, color=Country)) + 
+  geom_point() + 
+  labs(title = "Terrorism in Western Europe - from 1970 to 2020",
+       caption = "Source: Global Terror Database",
+       tag = "Fig 3") + theme_bw() +
+  scale_y_continuous(name="Number of terror incidents") +
+  scale_x_continuous(name="Year") + 
+  scale_color_manual(values = c("red","green","blue"))
+
+#can be inserted: stat_smooth(method = "lm", se = FALSE, size = 1.3)
+```
+
+```{r}
+# Figure 4 <- Incidents vs. kills
+## France 
+GTD_graph |> 
+  filter(Country=="France") |>
+  ggplot(aes(x=Year)) + 
+  geom_ribbon(aes(ymin=0, ymax=Incident), fill="black", alpha=.5) +
+  geom_col(aes(y=nkill), fill="red", size = 2, alpha=.8) +
+  theme_bw() + 
+  ylab(NULL) + 
+  labs( title = "History of terror in France", 
+        subtitle = "Number of incidents (grey, ribbon), Number of kills (red, columns)", 
+        caption = "Source: Global Terror Database", 
+        tag = "Fig. 4a")
+
+## Germany 
+GTD_graph |> 
+  filter(Country=="Germany") |>
+  ggplot(aes(x=Year)) + 
+  geom_ribbon(aes(ymin=0, ymax=Incident), fill="black", alpha=.5) +
+  geom_col(aes(y=nkill), fill="green", size = 2, alpha=.8) +
+  theme_bw() + 
+  ylab(NULL) + 
+  labs( title = "History of terror in Germany", 
+        subtitle = "Number of incidents (grey, ribbon), Number of kills (red, columns)", 
+        caption = "Source: Global Terror Database", 
+        tag = "Fig. 4b")
+
+## United Kingdom 
+GTD_graph |> 
+  filter(Country=="United Kingdom") |>
+  ggplot(aes(x=Year)) + 
+  geom_ribbon(aes(ymin=0, ymax=Incident), fill="black", alpha=.5) +
+  geom_col(aes(y=nkill), fill="blue", size = 2, alpha=.8) +
+  theme_bw() + 
+  ylab(NULL) + 
+  labs( title = "History of terror in United Kingdom", 
+        subtitle = "Number of incidents (grey, ribbon), Number of kills (red, columns)", 
+        caption = "Source: Global Terror Database", 
+        tag = "Fig. 4c")
+```
+
+```{r}
+#Figure 5 <- Which type of terror? 
+GTD_graph$Ratio <- GTD_graph$Domestic / GTD_graph$Incident
+
+## France 
+GTD_graph |>
+  filter(Country == "France") |>
+  ggplot() +
+  geom_col(aes(x=Year,y=Ratio*100), fill = "red") + 
+  expand_limits(y=c(0,105)) + 
+  scale_y_continuous(breaks=c(0,25,50,75,100), name = "Share of domestic terror") +
+  theme_bw() + 
+  labs(title = "Domestic vs. Transnational terror", 
+        subtitle = "France", 
+        caption = "Source: Global Terror Database", 
+        tag = "Fig. 5a")
+
+## Germany 
+GTD_graph |>
+  filter(Country == "Germany") |>
+  ggplot() +
+  geom_col(aes(x=Year,y=Ratio*100), fill = "green") + 
+  expand_limits(y=c(0,105)) + 
+  scale_y_continuous(breaks=c(0,25,50,75,100), name = "Share of domestic terror") +
+  theme_bw() + 
+  labs(title = "Domestic vs. Transnational terror", 
+        subtitle = "Germany", 
+        caption = "Source: Global Terror Database", 
+        tag = "Fig. 5b")
+
+## United Kingdom
+GTD_graph |>
+  filter(Country == "United Kingdom") |>
+  ggplot() +
+  geom_col(aes(x=Year,y=Ratio*100), fill = "blue") + 
+  expand_limits(y=c(0,105)) + 
+  scale_y_continuous(breaks=c(0,25,50,75,100), name = "Share of domestic terror") +
+  theme_bw() +
+  labs(title = "Domestic vs. Transnational terror", 
+        subtitle = "United Kingdom", 
+        caption = "Source: Global Terror Database", 
+        tag = "Fig. 5c")
+
+### ADD NUMBER OF INCIDENTS MAYBE
+```
+
+
+
+
+```{r}
+#Replace all NA-values with 0, as there has been no terrorist incidents for the given periods 
+DATA <- DATA %>% replace(is.na(.),0)
+
+#Subset data-sets into response-variables
+GDPGrowth <- subset(DATA, grepl("Growth of Gross Domestic Product", Variable))
+IShare <- subset(DATA, grepl("Gross fixed capital formation as a share of GDP", Variable))
+GShare <- subset(DATA, grepl("Government final consumption expenditure as a share of GDP", Variable))
+CShare <- subset(DATA, grepl("Privat final consumption expenditure as a share of GDP", Variable))
+```
+
+# VAR model on GDP Growth
+```{r}
+#Test for unit roots using general-to-specific Enders procedure
+
+# We replace the NAs with 0 
+x <- GDPGrowth$Value
+y <- replace_na(GDPGrowth$domestic, 0)
+z <- replace_na(GDPGrowth$transnational,0)
+
+plot(x, type = "l")
+plot(y, type = "l")
+plot(z, type = "l")
+
+df1x.none <- ur.df(x, lags = 10, selectlags = "Fixed", type = "none")
+df1x.none@testreg
+
+df1y.none <- ur.df(y, lags = 12, selectlags = "Fixed", type = "none")
+df1y.none@testreg
+
+df1z.none <- ur.df(z, lags = 8, selectlags = "Fixed", type = "none")
+df1z.none@testreg
+```
+
+```{r}
+#Test for serial correlation using ACF and Ljung-Box
+res.df1x.none <- df1x.none@res
+lag.max = 10*log10(length(x)/3)
+
+acf(res.df1x.none, lag.max = lag.max)
+pacf(res.df1x.none, lag.max = lag.max)
+
+Box.test(res.df1x.none, lag = 13, type = "Ljung-Box")
+Box.test(res.df1x.none, lag = 20, type = "Ljung-Box")
+Box.test(res.df1x.none, lag = 22, type = "Ljung-Box")
+
+# x: For lag 20 and 22, we reject the null hypothesis that H_0:p_i=0 
+#(Serial correlation is present)
+
+res.df1y.none <- df1y.none@res
+lag.max = 10*log10(length(y)/3)
+
+acf(res.df1y.none, lag.max = lag.max)
+
+Box.test(res.df1y.none, lag = 16, type = "Ljung-Box")
+Box.test(res.df1y.none, lag = 17, type = "Ljung-Box")
+Box.test(res.df1y.none, lag = 22, type = "Ljung-Box")
+
+# y: All lags, we cannot reject the null hypothesis that H_0:p_i=0 at \alpha=5% 
+
+res.df1z.none <- df1z.none@res
+lag.max = 10*log10(length(z)/3)
+
+acf(res.df1z.none, lag.max = lag.max)
+
+Box.test(res.df1z.none, lag = 19, type = "Ljung-Box")
+Box.test(res.df1z.none, lag = 22, type = "Ljung-Box")
+Box.test(res.df1z.none, lag = 23, type = "Ljung-Box")
+
+# z: All lags, we cannot reject the null hypothesis that H_0:p_i=0 at \alpha=5% 
+```
+
+```{r}
+#Test of stationarity (Standardized residuals)
+stres.df1x.none <- df1x.none@res / sd(res.df1x.none)
+
+plot(stres.df1x.none, type = "l", ylab = "Standardised residuals")
+abline(h = 0, col = "steelblue"); abline(h = 2, col = "steelblue"); abline(h = -2, col = "steelblue")
+
+length(which(abs(stres.df1x.none) > 2))
+0.05*length(x)
+
+#x: Just not normalized as 31>30
+
+stres.df1y.none <- df1y.none@res / sd(res.df1y.none)
+
+plot(stres.df1y.none, type = "l", ylab = "Standardised residuals")
+abline(h = 0, col = "steelblue"); abline(h = 2, col = "steelblue"); abline(h = -2, col = "steelblue")
+
+length(which(abs(stres.df1y.none) > 2))
+0.05*length(y)
+
+#y: Normally distributed as 19<30
+
+stres.df1z.none <- df1z.none@res / sd(res.df1z.none)
+
+plot(stres.df1z.none, type = "l", ylab = "Standardised residuals")
+abline(h = 0, col = "steelblue"); abline(h = 2, col = "steelblue"); abline(h = -2, col = "steelblue")
+
+length(which(abs(stres.df1z.none) > 2))
+0.05*length(z)
+
+#z: Normally distributed as 28<30
+```
+
+```{r}
+# Augmented Dicky-Fuller Test
+summary(df1x.none)
+
+#x: The absolute value of the test-statistic is greater than the tau_1 critical-value at a 5% significance. Therefore, we can reject the null hypothesis that gamma = 0. There is no unit root.
+
+summary(df1y.none)
+
+#y: The absolute value of the test-statistic is greater than the tau_1 critical-value at a 5% significance. Therefore, we can reject the null hypothesis that gamma = 0. There is no unit root.
+
+summary(df1z.none)
+
+#z: The absolute value of the test-statistic is greater than the tau_1 critical-value at a 5% significance. Therefore, we can reject the null hypothesis that gamma = 0. There is no unit root.
+```
+
+```{r}
+# Using AIC/BIC to select lag length on VAR
+VARselect(cbind(x, y, z), type = "const")  
+
+# AIC selects 9 lags and BIC (SC(n)) selects 2 lags
+```
+
+```{r}
+#Build the model 
+model1 <- VAR(cbind(x, y, z), p=9, type = "const", season = NULL, exog = NULL)
+summary(model1)
+```
+
+```{r}
+#Diagnosticts test 
+
+#Test for autocorrelation in the VAR model 
+serial.test(model1, lags.pt = 12, type = "PT.asymptotic")
+
+#Because p-value>5%, we reject the null hypothesis of no autocorrelation in the errors.
+
+#Test for heteroskedasticity
+arch.test(model1, lags.multi=12, multivariate.only = TRUE)
+
+#Since p-value < 5%, we reject the nullhypothesis of homoskedasticity
+#As the residuals are heteroskedastic, the squared residuals are autocorrelated.
+
+#Normal distribution of residuals (3 tests)
+normality.test(model1, multivariate.only = TRUE)
+
+# Based on the JB-test, we reject the null hypothesis and the residuals are not normally distributed. We also fail the test of skewness and kurtosis. 
+
+#Testing for structural breaks in the residuals (test of stability)
+plot(stability(model1, type="OLS-CUSUM"))
+
+#There is a structural break in y (domestic). The system is not stable. 
+
+
+
+```
+Vi mangler nogle lags, som gør vi ikke optager alt information i dataen. 
+
+
+Why is autocorrelation so bad? 
+- it biases the estimators and makes them less efficient 
+
+also, 
+- the estimators are not unbiased and efficient, when autocorrelation is present
+
+```{r}
+#Impulse Response functions
+plot(irf(model1))
+```
+
+# VAR model on CShare
+```{r}
+#VAR model on C/Share as x-variable (Preparation part 1)
+x <- CShare$Value
+plot(x, type = "l")
+
+df1x.trend <- ur.df(x, lags = 8, selectlags = "Fixed", type = "trend")
+df1x.trend@testreg
+
+#Serial correlation 
+res.df1x.trend <- df1x.trend@res
+lag.max = 10*log10(length(x)/3)
+
+acf(res.df1x.trend, lag.max = lag.max)
+pacf(res.df1x.trend, lag.max = lag.max)
+
+Box.test(res.df1x.trend, lag = 13, type = "Ljung-Box")
+Box.test(res.df1x.trend, lag = 14, type = "Ljung-Box")
+Box.test(res.df1x.trend, lag = 23, type = "Ljung-Box")
+
+# x: For all lags, we  reject the null hypothesis that H_0:p_i=0 
+#(Not serially correlated)
+
+#Stationarity (Standardized residuals)
+stres.df1x.trend <- df1x.trend@res / sd(res.df1x.trend)
+
+plot(stres.df1x.trend, type = "l", ylab = "Standardised residuals")
+abline(h = 0, col = "steelblue"); abline(h = 2, col = "steelblue"); abline(h = -2, col = "steelblue")
+
+length(which(abs(stres.df1x.trend) > 2))
+0.05*length(x)
+
+#x: It is normally distributed as 20<30
+
+# ADF Test
+summary(df1x.trend)
+
+#x: The absolute value of the test-statistic 1 (unit-root statistic) is below the tau_3 critical-value at a 5% significance. Thus, we fail to reject H0, and suspect a unit root. 
+
+#x: The absolute value of the test-statistic 3 (trend test statistic) is below  the phi_3 critical-value at a 5% significance. Thus, we fail to reject H0, and we test again without a trend. 
+
+df1x.drift <- ur.df(x, lags = 8, selectlags = "Fixed", type = "drift")
+df1x.drift@testreg
+
+#Serial correlation 
+res.df1x.drift <- df1x.drift@res
+lag.max = 10*log10(length(x)/3)
+
+acf(res.df1x.drift, lag.max = lag.max)
+pacf(res.df1x.drift, lag.max = lag.max)
+
+Box.test(res.df1x.drift, lag = 13, type = "Ljung-Box")
+Box.test(res.df1x.drift, lag = 14, type = "Ljung-Box")
+Box.test(res.df1x.drift, lag = 23, type = "Ljung-Box")
+
+# x: For all lags, we  reject the null hypothesis that H_0:p_i=0 
+#(Not serially correlated)
+
+#Stationarity (Standardized residuals)
+stres.df1x.drift <- df1x.drift@res / sd(res.df1x.drift)
+
+plot(stres.df1x.drift, type = "l", ylab = "Standardised residuals")
+abline(h = 0, col = "steelblue"); abline(h = 2, col = "steelblue"); abline(h = -2, col = "steelblue")
+
+length(which(abs(stres.df1x.drift) > 2))
+0.05*length(x)
+
+#x: It is normally distributed as 21<30
+
+# ADF Test
+summary(df1x.drift)
+
+#x: The absolute value of the test-statistic 1 (unit-root statistic) is below the tau_2 critical-value at a 5% significance. Thus, we fail to reject H0, and suspect a unit root. 
+
+#x: The absolute value of the test-statistic 2 (drift test statistic) is below  the phi_1 critical-value at a 5% significance. Thus, we fail to reject H0, and we test again without a drift. 
+
+df1x.none <- ur.df(x, lags = 8, selectlags = "Fixed", type = "none")
+df1x.none@testreg
+
+#Serial correlation 
+res.df1x.none <- df1x.none@res
+lag.max = 10*log10(length(x)/3)
+
+acf(res.df1x.none, lag.max = lag.max)
+pacf(res.df1x.none, lag.max = lag.max)
+
+Box.test(res.df1x.none, lag = 13, type = "Ljung-Box")
+Box.test(res.df1x.none, lag = 14, type = "Ljung-Box")
+Box.test(res.df1x.none, lag = 23, type = "Ljung-Box")
+
+# x: For all lags, we  reject the null hypothesis that H_0:p_i=0 
+#(Not serially correlated)
+
+#Stationarity (Standardized residuals)
+stres.df1x.none <- df1x.none@res / sd(res.df1x.none)
+
+plot(stres.df1x.none, type = "l", ylab = "Standardised residuals")
+abline(h = 0, col = "steelblue"); abline(h = 2, col = "steelblue"); abline(h = -2, col = "steelblue")
+
+length(which(abs(stres.df1x.none) > 2))
+0.05*length(x)
+
+#x: It is normally distributed as 21<30
+
+# ADF Test
+summary(df1x.none)
+
+#x: The absolute value of the test-statistic 1 (unit-root statistic) is below the tau_1 critical-value at a 5% significance. Thus, we fail to reject H0, and suspect a unit root. 
+
+```
+
+```{r}
+#VAR model on C/Share as x-variable (Preparation part 2)
+x <- diff(CShare$Value)
+plot(x, type="l")
+
+df1x.none <- ur.df(x, lags = 12, selectlags = "Fixed", type = "none")
+df1x.none@testreg
+
+#Serial correlation 
+res.df1x.none <- df1x.none@res
+lag.max = 10*log10(length(x)/3)
+
+acf(res.df1x.none, lag.max = lag.max)
+pacf(res.df1x.none, lag.max = lag.max)
+
+Box.test(res.df1x.none, lag = 14, type = "Ljung-Box")
+Box.test(res.df1x.none, lag = 21, type = "Ljung-Box")
+Box.test(res.df1x.none, lag = 23, type = "Ljung-Box")
+
+# x: For all lags, we  reject the null hypothesis that H_0:p_i=0 
+#(Not serially correlated)
+
+#Stationarity (Standardized residuals)
+stres.df1x.none <- df1x.none@res / sd(res.df1x.none)
+
+plot(stres.df1x.none, type = "l", ylab = "Standardised residuals")
+abline(h = 0, col = "steelblue"); abline(h = 2, col = "steelblue"); abline(h = -2, col = "steelblue")
+
+length(which(abs(stres.df1x.none) > 2))
+0.05*length(x)
+
+#x: It is normally distributed as 22<29.95
+
+# ADF Test
+summary(df1x.none)
+
+#x: The absolute value of the test-statistic 1 (unit-root statistic) is greater than the tau_1 critical-value at a 5% significance. Thus, we reject H0 of a potential unit root.  
+
+#Thus, we use the first difference of CShare. 
+```
+
+```{r}
+#VAR model on C/Share as x-variable (Building model)
+
+# Using AIC/BIC to select lag length on VAR
+VARselect(cbind(x, y, z), type = "const")  
+
+# AIC selects 9 lags and BIC (SC(n)) selects 1 lags
+
+#Build the model 
+model2 <- VAR(cbind(x, y, z), p=9, type = "const", season = NULL, exog = NULL)
+summary(model2)
+
+#Diagnosticts test 
+#Test for autocorrelation in the VAR model 
+serial.test(model2, lags.pt = 12, type = "PT.asymptotic")
+
+#Because p-value>5%, we fail to reject the null hypothesis of no autocorrelation in the errors.
+
+#Test for heteroskedasticity
+arch.test(model2, lags.multi=12, multivariate.only = TRUE)
+
+#Since p-value < 5%, we reject the nullhypothesis of homoskedasticity
+#As the residuals are heteroskedastic, the squared residuals are autocorrelated.
+
+#Normal distribution of residuals (3 tests)
+normality.test(model2, multivariate.only = TRUE)
+
+# Based on the JB-test, we reject the null hypothesis and the residuals are not normally distributed. We also fail the test of skewness and kurtosis. 
+
+#Testing for structural breaks in the residuals (test of stability)
+plot(stability(model2, type="OLS-CUSUM"))
+
+#There is a structural break in y (domestic). The system is not stable. 
+
+#Impulse Response Functions
+plot(irf(model2))
+```
+
+#VAR model on GShare
+```{r}
+#VAR model on G/Share as x-variable (Preparation part 1)
+x <- GShare$Value
+plot(x, type = "l")
+
+df1x.trend <- ur.df(x, lags = 1, selectlags = "Fixed", type = "trend")
+df1x.trend@testreg
+
+# Using AIC/BIC to select lag length on variable
+VARselect(x, lag.max = 12, type = "const")  
+
+#We proceed with 1 lag, because all information criteria says so
+
+#Serial correlation 
+res.df1x.trend <- df1x.trend@res
+lag.max = 10*log10(length(x)/3)
+
+acf(res.df1x.trend, lag.max = lag.max)
+pacf(res.df1x.trend, lag.max = lag.max)
+
+Box.test(res.df1x.trend, lag = 4, type = "Ljung-Box")
+Box.test(res.df1x.trend, lag = 8, type = "Ljung-Box")
+Box.test(res.df1x.trend, lag = 17, type = "Ljung-Box")
+
+# x: For all lags, we  reject the null hypothesis that H_0:p_i=0 
+#(Not serially correlated)
+
+#Stationarity (Standardized residuals)
+stres.df1x.trend <- df1x.trend@res / sd(res.df1x.trend)
+
+plot(stres.df1x.trend, type = "l", ylab = "Standardised residuals")
+abline(h = 0, col = "steelblue"); abline(h = 2, col = "steelblue"); abline(h = -2, col = "steelblue")
+
+length(which(abs(stres.df1x.trend) > 2))
+0.05*length(x)
+
+#x: It is normally distributed as 11<30
+
+# ADF Test
+summary(df1x.trend)
+
+#x: The absolute value of the test-statistic 1 (unit-root statistic) is below the tau_3 critical-value at a 5% significance. Thus, we fail to reject H0, and suspect a unit root. 
+
+#x: The absolute value of the test-statistic 3 (trend test statistic) is below the phi_3 critical-value at a 5% significance. Thus, we fail to reject H0, and we test again without a trend. 
+
+df1x.drift <- ur.df(x, lags = 1, selectlags = "Fixed", type = "drift")
+df1x.drift@testreg
+
+VARselect(x, lag.max = 12, type = "const")  
+
+#Serial correlation 
+res.df1x.drift <- df1x.drift@res
+lag.max = 10*log10(length(x)/3)
+
+acf(res.df1x.drift, lag.max = lag.max)
+pacf(res.df1x.drift, lag.max = lag.max)
+
+Box.test(res.df1x.drift, lag = 4, type = "Ljung-Box")
+Box.test(res.df1x.drift, lag = 8, type = "Ljung-Box")
+Box.test(res.df1x.drift, lag = 17, type = "Ljung-Box")
+
+# x: For all lags, we  reject the null hypothesis that H_0:p_i=0 
+#(Not serially correlated)
+
+#Stationarity (Standardized residuals)
+stres.df1x.drift <- df1x.drift@res / sd(res.df1x.drift)
+
+plot(stres.df1x.drift, type = "l", ylab = "Standardised residuals")
+abline(h = 0, col = "steelblue"); abline(h = 2, col = "steelblue"); abline(h = -2, col = "steelblue")
+
+length(which(abs(stres.df1x.drift) > 2))
+0.05*length(x)
+
+#x: It is normally distributed as 12<30
+
+# ADF Test
+summary(df1x.drift)
+
+#x: The absolute value of the test-statistic 1 (unit-root statistic) is below the tau_2 critical-value at a 5% significance. Thus, we fail to reject H0, and suspect a unit root. 
+
+#x: The absolute value of the test-statistic 2 (drift test statistic) is below the phi_1 critical-value at a 5% significance. Thus, we fail to reject H0, and we test again without a drift. 
+
+df1x.none <- ur.df(x, lags = 1, selectlags = "Fixed", type = "none")
+df1x.none@testreg
+
+VARselect(x, lag.max = 12, type = "const")  
+
+#Serial correlation 
+res.df1x.none <- df1x.none@res
+lag.max = 10*log10(length(x)/3)
+
+acf(res.df1x.none, lag.max = lag.max)
+pacf(res.df1x.none, lag.max = lag.max)
+
+Box.test(res.df1x.none, lag = 4, type = "Ljung-Box")
+Box.test(res.df1x.none, lag = 8, type = "Ljung-Box")
+Box.test(res.df1x.none, lag = 17, type = "Ljung-Box")
+
+# x: For all lags, we  reject the null hypothesis that H_0:p_i=0 
+#(Not serially correlated)
+
+#Stationarity (Standardized residuals)
+stres.df1x.none <- df1x.none@res / sd(res.df1x.none)
+
+plot(stres.df1x.none, type = "l", ylab = "Standardised residuals")
+abline(h = 0, col = "steelblue"); abline(h = 2, col = "steelblue"); abline(h = -2, col = "steelblue")
+
+length(which(abs(stres.df1x.none) > 2))
+0.05*length(x)
+
+#x: It is normally distributed as 12<30
+
+# ADF Test
+summary(df1x.none)
+
+#x: The absolute value of the test-statistic 1 (unit-root statistic) is below the tau_1 critical-value at a 5% significance. Thus, we fail to reject H0, and suspect a unit root. 
+```
+
+```{r}
+#VAR model on G/Share as x-variable (Preparation part 2)
+x <- diff(GShare$Value)
+plot(x, type="l")
+
+df1x.none <- ur.df(x, lags = 1, selectlags = "Fixed", type = "none")
+df1x.none@testreg
+
+VARselect(x, lag.max = 12, type = "const")  
+
+#Serial correlation 
+res.df1x.none <- df1x.none@res
+lag.max = 10*log10(length(x)/3)
+
+acf(res.df1x.none, lag.max = lag.max)
+pacf(res.df1x.none, lag.max = lag.max)
+
+Box.test(res.df1x.none, lag = 8, type = "Ljung-Box")
+Box.test(res.df1x.none, lag = 17, type = "Ljung-Box")
+
+# x: For all lags, we  reject the null hypothesis that H_0:p_i=0 
+#(Not serially correlated)
+
+#Stationarity (Standardized residuals)
+stres.df1x.none <- df1x.none@res / sd(res.df1x.none)
+
+plot(stres.df1x.none, type = "l", ylab = "Standardised residuals")
+abline(h = 0, col = "steelblue"); abline(h = 2, col = "steelblue"); abline(h = -2, col = "steelblue")
+
+length(which(abs(stres.df1x.none) > 2))
+0.05*length(x)
+
+#x: It is normally distributed as 12<29.95
+
+# ADF Test
+summary(df1x.none)
+
+#x: The absolute value of the test-statistic 1 (unit-root statistic) is greater than the tau_1 critical-value at a 5% significance. Thus, we reject H0 of a potential unit root.  
+
+#Thus, we use the first difference of GShare. 
+```
+
+```{r}
+#VAR model on G/Share as x-variable (Building model)
+
+# Using AIC/BIC to select lag length on VAR
+VARselect(cbind(x, y, z), type = "const")  
+
+# AIC selects 9 lags and BIC (SC(n)) selects 1 lags
+
+#Build the model 
+model3 <- VAR(cbind(x, y, z), p=9, type = "const", season = NULL, exog = NULL)
+summary(model3)
+
+#Diagnosticts test 
+#Test for autocorrelation in the VAR model 
+serial.test(model3, lags.pt = 12, type = "PT.asymptotic")
+
+#Because p-value>5%, we fail to reject the null hypothesis of no autocorrelation in the errors.
+
+#Test for heteroskedasticity
+arch.test(model3, lags.multi=12, multivariate.only = TRUE)
+
+#Since p-value < 5%, we reject the nullhypothesis of homoskedasticity
+#As the residuals are heteroskedastic, the squared residuals are autocorrelated.
+
+#Normal distribution of residuals (3 tests)
+normality.test(model3, multivariate.only = TRUE)
+
+# Based on the JB-test, we reject the null hypothesis and the residuals are not normally distributed. We also fail the test of skewness and kurtosis. 
+
+#Testing for structural breaks in the residuals (test of stability)
+plot(stability(model3, type="OLS-CUSUM"))
+
+#There is a structural break in y (domestic). The system is not stable. 
+
+#Impulse Response Functions
+plot(irf(model3))
+```
+
+
+#VAR model on IShare 
+```{r}
+#VAR model on I/Share as x-variable (Preparation part 1)
+x <- IShare$Value
+plot(x, type = "l")
+
+df1x.trend <- ur.df(x, lags = 4, selectlags = "Fixed", type = "trend")
+df1x.trend@testreg
+
+#Serial correlation 
+res.df1x.trend <- df1x.trend@res
+lag.max = 10*log10(length(x)/3)
+
+acf(res.df1x.trend, lag.max = lag.max)
+pacf(res.df1x.trend, lag.max = lag.max)
+
+Box.test(res.df1x.trend, lag = 5, type = "Ljung-Box")
+Box.test(res.df1x.trend, lag = 10, type = "Ljung-Box")
+Box.test(res.df1x.trend, lag = 19, type = "Ljung-Box")
+
+# x: For all lags, we  reject the null hypothesis that H_0:p_i=0 
+#(Not serially correlated)
+
+#Stationarity (Standardized residuals)
+stres.df1x.trend <- df1x.trend@res / sd(res.df1x.trend)
+
+plot(stres.df1x.trend, type = "l", ylab = "Standardised residuals")
+abline(h = 0, col = "steelblue"); abline(h = 2, col = "steelblue"); abline(h = -2, col = "steelblue")
+
+length(which(abs(stres.df1x.trend) > 2))
+0.05*length(x)
+
+#x: Not normalized as 37<30
+
+#Thus, we take the first difference of IShare (x)
+```
+
+```{r}
+#VAR model on I/Share as x-variable (Preparation part 2)
+x <- diff(IShare$Value)
+plot(x, type="l")
+
+df1x.none <- ur.df(x, lags = 3, selectlags = "Fixed", type = "none")
+df1x.none@testreg
+
+#Serial correlation 
+res.df1x.none <- df1x.none@res
+lag.max = 10*log10(length(x)/3)
+
+acf(res.df1x.none, lag.max = lag.max)
+pacf(res.df1x.none, lag.max = lag.max)
+
+Box.test(res.df1x.none, lag = 8, type = "Ljung-Box")
+Box.test(res.df1x.none, lag = 12, type = "Ljung-Box")
+Box.test(res.df1x.none, lag = 19, type = "Ljung-Box")
+
+# x: For all lags, we  reject the null hypothesis that H_0:p_i=0 
+#(Not serially correlated)
+
+#Stationarity (Standardized residuals)
+stres.df1x.none <- df1x.none@res / sd(res.df1x.none)
+
+plot(stres.df1x.none, type = "l", ylab = "Standardised residuals")
+abline(h = 0, col = "steelblue"); abline(h = 2, col = "steelblue"); abline(h = -2, col = "steelblue")
+
+length(which(abs(stres.df1x.none) > 2))
+0.05*length(x)
+
+#x: Not normalized as 35<29.95
+
+#Thus, we try with the second difference of IShare. 
+```
+
+```{r}
+#VAR model on I/Share as x-variable (Preparation part 3)
+x <- diff(x)
+plot(x, type="l")
+
+df1x.none <- ur.df(x, lags = 8, selectlags = "Fixed", type = "none")
+df1x.none@testreg
+
+#Serial correlation 
+res.df1x.none <- df1x.none@res
+lag.max = 10*log10(length(x)/3)
+
+acf(res.df1x.none, lag.max = lag.max)
+pacf(res.df1x.none, lag.max = lag.max)
+
+Box.test(res.df1x.none, lag = 10, type = "Ljung-Box")
+Box.test(res.df1x.none, lag = 12, type = "Ljung-Box")
+Box.test(res.df1x.none, lag = 19, type = "Ljung-Box")
+
+# x: For all lags, we  reject the null hypothesis that H_0:p_i=0 
+#(Not serially correlated)
+
+#Stationarity (Standardized residuals)
+stres.df1x.none <- df1x.none@res / sd(res.df1x.none)
+
+plot(stres.df1x.none, type = "l", ylab = "Standardised residuals")
+abline(h = 0, col = "steelblue"); abline(h = 2, col = "steelblue"); abline(h = -2, col = "steelblue")
+
+length(which(abs(stres.df1x.none) > 2))
+0.05*length(x)
+
+#x: Not normalized as 35<29.9
+
+#We will not continue with IShare, as it is non-stationary in both I(1) and I(2). 
+```
+
+## Cointegration test on IShare
+```{r}
+#Engle-Granger Test: x ~ y + z
+
+#Step 1: Check for I(1) using ADF-tests
+xdiff <- diff(IShare$Value)
+
+y <- replace_na(IShare$domestic,0)
+z <- replace_na(IShare$transnational,0)
+
+ydiff <- diff(y)
+zdiff <- diff(z)
+
+#"x" diagnostics test
+df1x.none <- ur.df(x, lags = 8, selectlags = "Fixed", type = "none")
+df1x.none@testreg
+
+res.df1x.none <- df1x.none@res
+lag.max = 10*log10(length(x)/3)
+
+acf(res.df1x.none, lag.max = lag.max)
+pacf(res.df1x.none, lag.max = lag.max)
+
+Box.test(res.df1x.none, lag = 10, type = "Ljung-Box")
+Box.test(res.df1x.none, lag = 12, type = "Ljung-Box")
+Box.test(res.df1x.none, lag = 19, type = "Ljung-Box")
+
+stres.df1x.none <- df1x.none@res / sd(res.df1x.none)
+plot(stres.df1x.none, type = "l", ylab = "Standardised residuals")
+abline(h = 0, col = "steelblue"); abline(h = 2, col = "steelblue"); abline(h = -2, col = "steelblue")
+
+length(which(abs(stres.df1x.none) > 2))
+0.05*length(x)
+# not serially correlated. not normalized
+
+#we add one more lag and test again 
+df1x.none <- ur.df(x, lags = 9, selectlags = "Fixed", type = "none")
+df1x.none@testreg
+
+res.df1x.none <- df1x.none@res
+lag.max = 10*log10(length(x)/3)
+acf(res.df1x.none, lag.max = lag.max)
+
+Box.test(res.df1x.none, lag = 11, type = "Ljung-Box")
+Box.test(res.df1x.none, lag = 12, type = "Ljung-Box")
+Box.test(res.df1x.none, lag = 19, type = "Ljung-Box")
+
+stres.df1x.none <- df1x.none@res / sd(res.df1x.none)
+plot(stres.df1x.none, type = "l", ylab = "Standardised residuals")
+abline(h = 0, col = "steelblue"); abline(h = 2, col = "steelblue"); abline(h = -2, col = "steelblue")
+
+length(which(abs(stres.df1x.none) > 2))
+0.05*length(x)
+
+# still not normalized. the number of lags outside the +-2 band is still 5.
+#we add two more lag and test again 
+df1x.none <- ur.df(x, lags = 10, selectlags = "Fixed", type = "none")
+df1x.none@testreg
+
+res.df1x.none <- df1x.none@res
+lag.max = 10*log10(length(x)/3)
+acf(res.df1x.none, lag.max = lag.max)
+
+Box.test(res.df1x.none, lag = 11, type = "Ljung-Box")
+Box.test(res.df1x.none, lag = 12, type = "Ljung-Box")
+Box.test(res.df1x.none, lag = 20, type = "Ljung-Box")
+
+stres.df1x.none <- df1x.none@res / sd(res.df1x.none)
+plot(stres.df1x.none, type = "l", ylab = "Standardised residuals")
+abline(h = 0, col = "steelblue"); abline(h = 2, col = "steelblue"); abline(h = -2, col = "steelblue")
+
+length(which(abs(stres.df1x.none) > 2))
+0.05*length(x)
+# now only 3 outside the band. 
+# we continue with this specification
+
+#"y" dianostics test 
+df1y.none <- ur.df(y, lags = 12, selectlags = "Fixed", type = "none")
+df1y.none@testreg
+
+res.df1y.none <- df1y.none@res
+lag.max = 10*log10(length(y)/3)
+
+acf(res.df1y.none, lag.max = lag.max)
+pacf(res.df1y.none, lag.max = lag.max)
+
+Box.test(res.df1y.none, lag = 16, type = "Ljung-Box")
+Box.test(res.df1y.none, lag = 17, type = "Ljung-Box")
+Box.test(res.df1y.none, lag = 22, type = "Ljung-Box")
+
+stres.df1y.none <- df1y.none@res / sd(res.df1y.none)
+plot(stres.df1y.none, type = "l", ylab = "Standardised residuals")
+abline(h = 0, col = "steelblue"); abline(h = 2, col = "steelblue"); abline(h = -2, col = "steelblue")
+
+length(which(abs(stres.df1y.none) > 2))
+0.05*length(y)
+# not serially correlated. normally distributed  
+
+#"z" dianostics test 
+df1z.none <- ur.df(z, lags = 8, selectlags = "Fixed", type = "none")
+df1z.none@testreg
+
+res.df1z.none <- df1z.none@res
+lag.max = 10*log10(length(z)/3)
+
+acf(res.df1z.none, lag.max = lag.max)
+pacf(res.df1z.none, lag.max = lag.max)
+
+Box.test(res.df1z.none, lag = 19, type = "Ljung-Box")
+Box.test(res.df1z.none, lag = 22, type = "Ljung-Box")
+
+stres.df1z.none <- df1z.none@res / sd(res.df1z.none)
+plot(stres.df1z.none, type = "l", ylab = "Standardised residuals")
+abline(h = 0, col = "steelblue"); abline(h = 2, col = "steelblue"); abline(h = -2, col = "steelblue")
+
+length(which(abs(stres.df1z.none) > 2))
+0.05*length(z)
+# not serially correlated. normally distributed  
+
+#All series are I(1), so we proceed. 
+```
+
+```{r}
+x <- IShare$Value
+y <- replace_na(IShare$domestic,0)
+z <- replace_na(IShare$transnational,0)
+
+#Step 2: Estimate the long-run equilibrium relationship 
+lm1 <- lm(x ~ y + z, IShare)
+summary(lm1)
+
+# High positive correlation, low R^2
+```
+
+```{r}
+#Step 3: Check if residuals are stationary using ADF test (specific-to-general approach)
+
+df.lm1 <- ur.df(lm1$residuals, lags = 0, selectlags = "Fixed", type = "none")
+summary(df.lm1)
+# For the Engle-Granger test I use the CV from table C in the supplementary manual with 500 observations on a 5% level (=−3.760).
+
+# As the absolute value of the test statistic is greater than the CV I fail to reject H0: Unit root. 
+# We try with more lags. 
+
+df.lm1 <- ur.df(lm1$residuals, lags = 1, selectlags = "Fixed", type = "none")
+summary(df.lm1)
+# For the Engle-Granger test I use the CV from table C in the supplementary manual with 500 observations on a 5% level (=−3.760).
+# The absolute value of test statistic is less than the CV, so I reject H0: Unit root and conclude on a stationary sequence and that x, y, and z are cointegrated of CI(1,1).
+
+## Diagnostic checks
+# Serial correlation
+df.lm1.res <- df.lm1@res
+acf(df.lm1.res)
+
+Box.test(df.lm1.res, lag = 9, type = "Ljung-Box")
+Box.test(df.lm1.res, lag = 12, type = "Ljung-Box")
+Box.test(df.lm1.res, lag = 19, type = "Ljung-Box")
+# no serial correlation at a 5% significance. 
+
+# Normalised residuals
+df.lm1.stres <- df.lm1.res / sd(df.lm1.res)
+length(which(abs(df.lm1.stres) >2))
+0.05*length(x)
+# errors are normally distributed as 28<30. 
+
+#They are indeed co-integrated. 
+```
+
+## VECM on IShare
+```{r}
+#Create dataframe 
+df <- data.frame(xdiff, ydiff, zdiff)
+
+lm1.res <- lm1$residuals
+lm1.lagres <- embed(lm1.res, dimension = 2)[,1]
+
+#Choose number of lags
+VARselect(df, exogen=lm1.lagres, type="const")
+
+#AIC select 8 lags, while BIC choose 3 lags. 
+
+#Estimate VEC 
+testA <- ca.jo(df, ecdet="const", type = "trace", K = 8)
+testB <- ca.jo(df, ecdet="const", type = "eigen", K = 8)
+
+summary(testA);summary(testB)
+
+#We have two co-integrating relationships
+
+#We build the model(lag=p-1)
+model1 <- VECM(df, lag=7, r=2, estim="ML")
+summary(model1)
+```
+
+ECT1, ECT2: Long-run relationships
+The lags: Short-run relationships 
+
+We have until lag 2 since we specified this. 
+
+We test the adequecy of the model. 
+
+```{r}
+#Transform VECM to VAR 
+model1.VAR <- vec2var(testA, r=2)
+```
+
+```{r}
+#Diagnostics test
+
+#Autocorrelation in the errors
+serial.test(model1.VAR, lags.pt = 12, type="PT.asymptotic")
+
+#p-value < 5%, we reject the null hypothesis of no serial correlation. 
+
+#ARCH effects (We want no arch effects, because they are equal to clustered volatility in the model)
+arch.test(model1.VAR, lags.multi = 15, multivariate.only = TRUE)
+
+#Since p-value < 5%, we reject the nullhypothesis of homoskedasticity
+#It has arch effects (residual heteroskedasticity)
+
+#Normality of residuals
+normality.test(model1.VAR, multivariate.only = TRUE)
+
+# Based on the JB-test, we reject the null hypothesis and the residuals are not normally distributed. We also fail the test of skewness and kurtosis. 
+```
+
+```{r}
+#Impulse Response Functions
+Iirf <- irf(model1.VAR, impulse="xdiff", response="xdiff", n.ahead = 20, boot=TRUE)
+plot(Iirf, ylab = "I/Share", main="I/Share's shock on I/Share")
+
+domirf <- irf(model1.VAR, impulse="xdiff", response="ydiff", n.ahead = 20, boot=TRUE)
+plot(domirf, ylab = "Domestic incidents", main="I/Share's shock on domestic incidents")
+
+transirf <- irf(model1.VAR, impulse="xdiff", response="zdiff", n.ahead = 20, boot=TRUE)
+plot(transirf, ylab = "Transnational incidents", main="I/Share's shock on transnational incidents")
+
+```
+
+
+
